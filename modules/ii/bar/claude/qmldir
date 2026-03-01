@@ -1,0 +1,3 @@
+module qs.modules.ii.bar.claude
+ClaudeUsageBar 1.0 ClaudeUsageBar.qml
+ClaudeUsagePopup 1.0 ClaudeUsagePopup.qml

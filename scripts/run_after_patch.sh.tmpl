@@ -1,0 +1,112 @@
+#!/bin/bash
+# chezmoi run_after script — idempotent BarContent.qml patch
+# Inject Claude Usage widget into end-4's bar after every chezmoi apply.
+#
+# Rename to: run_after_99.sh.tmpl (or append to your existing one)
+
+set -euo pipefail
+
+BARCONTENT="$HOME/.config/quickshell/ii/modules/ii/bar/BarContent.qml"
+MARKER="[CHRIS_PATCH] Claude Usage Widget"
+
+# ─── Patch BarContent.qml ───────────────────────────────────────────────────
+
+if [[ ! -f "$BARCONTENT" ]]; then
+    echo "BarContent.qml not found at $BARCONTENT — skipping patch"
+else
+    if grep -q "$MARKER" "$BARCONTENT"; then
+        echo "BarContent.qml: patch already applied, skipping"
+    else
+        echo "BarContent.qml: applying Claude Usage patch..."
+
+        python3 - "$BARCONTENT" << 'PYTHON'
+import sys, re
+
+path = sys.argv[1]
+with open(path, "r") as f:
+    content = f.read()
+
+# ── Patch 1: inject Claude Usage Loader after the Weather Loader block ───────
+#
+# Anchor: the closing braces of the Weather Loader block.
+# Pattern:  WeatherBar {}
+#           }        ← closes sourceComponent
+#         }          ← closes Loader
+#
+# We inject right after these two closing braces.
+widget_patch = '''
+            // [CHRIS_PATCH] Claude Usage Widget — auto-injected by chezmoi
+            Loader {
+                Layout.leftMargin: 4
+                active: Config.options.bar.claudeUsage?.enable ?? true
+
+                sourceComponent: BarGroup {
+                    ClaudeUsageBar {}
+                }
+            }'''
+
+# Also inject SessionBrowser loader (can be disabled via config after login)
+session_patch = '''
+            // [CHRIS_PATCH] Session Browser (one-time login, disable after use)
+            Loader {
+                Layout.leftMargin: 4
+                active: Config.options.bar.sessionBrowser?.enable ?? false
+
+                sourceComponent: BarGroup {
+                    SessionBrowser {}
+                }
+            }'''
+
+# Anchor regex: WeatherBar {} followed by two closing braces (with varying whitespace)
+anchor = re.compile(
+    r'(WeatherBar\s*\{\}\s*\n\s*\}\s*\n\s*\})',
+    re.DOTALL
+)
+
+match = anchor.search(content)
+if not match:
+    print("  ✗ Anchor not found — end-4 may have changed BarContent.qml structure")
+    print("    Expected: 'WeatherBar {}' followed by two closing braces")
+    print("    Check and update the anchor pattern in run_after_patch.sh.tmpl")
+    sys.exit(1)
+
+insert_pos = match.end()
+new_content = content[:insert_pos] + "\n" + widget_patch + "\n" + session_patch + content[insert_pos:]
+
+# ── Patch 2: add import for our modules ────────────────────────────────────
+
+claude_import = "import qs.modules.ii.bar.claude\n"
+session_import = "import qs.modules.ii.bar.session\n"
+services_import = "import qs.services.chris\n"
+
+# Find the weather import as anchor for new imports
+weather_import_anchor = "import qs.modules.ii.bar.weather\n"
+
+if claude_import not in new_content:
+    if weather_import_anchor in new_content:
+        new_content = new_content.replace(
+            weather_import_anchor,
+            weather_import_anchor + claude_import + session_import + services_import
+        )
+        print("  ✓ Import patch applied")
+    else:
+        print("  ⚠ Import anchor not found — add these imports manually to BarContent.qml:")
+        print("      import qs.modules.ii.bar.claude")
+        print("      import qs.modules.ii.bar.session")
+        print("      import qs.services.chris")
+
+with open(path, "w") as f:
+    f.write(new_content)
+
+print("  ✓ BarContent.qml patch applied successfully")
+PYTHON
+
+    fi
+fi
+
+# ─── Reload Quickshell if running ──────────────────────────────────────────
+
+if pgrep -x qs > /dev/null 2>&1; then
+    echo "Reloading Quickshell..."
+    qs -c ii ipc call reload 2>/dev/null || true
+fi
